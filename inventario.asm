@@ -1,4 +1,5 @@
 .data
+#Este es el inventario que utilizara la caja registradora 
 p001:   .word 000001234 320 0 75
 	.asciiz "Jugo de naranja"
 	.align 5
@@ -14,3 +15,5 @@ p004:   .word 000001111 30 5 00
 p005:   .word 000001121 58 0 50
 	.asciiz "Queso blanco"
 	.align 5
+	
+
