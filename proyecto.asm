@@ -1,872 +1,830 @@
+# Proyecto I
+# Autores:
+# Ricardo García, Carnet: 20-10274
+# Renata Colon, Carnet: 18-10649
+
 .data
-.include "inventario.asm"
+	.include "inventario.asm"
 
-# Estructuras para la caja registradora
-tabla_hash: .space 40        
-compra_head: .word 0
-compra_tail: .word 0
-compra_count: .word 0
-compra_total: .word 0
-ventas_dia: .space 20        
+	buffer: 	.space  64
+	newline:     	.asciiz "\n"
+	signo_dolar: 	.asciiz "$"
+	espacio:     	.asciiz "      "
+	notfound:    	.asciiz "Producto no encontrado\n"
+	finished:    	.asciiz "-- cierre de caja --\n"
+	total_label: 	.asciiz "Total compra:  "
+	error: 		.asciiz "No se puede realizar la operacion\n"
+	out_of_stock: 	.asciiz "Producto agotado\n"
+	stock_header: 	.asciiz "\n--- Stock Actual ---\n"
+	stock_item:  	.asciiz "Stock: "
+	stock_display: 	.asciiz "stock "
 
-# Mensajes
-msg_bienvenida: .asciiz "=== CAJA REGISTRADORA ===\n"
-msg_instrucciones: .asciiz "Comandos: 1234,5656,1111,1121,100000001\n*2 (multiplicar), -1 (eliminar)\n+ (total), / (cierre)\n"
-msg_prompt: .asciiz "> "
-msg_producto_no_encontrado: .asciiz "Error: Producto no encontrado\n"
-msg_stock_insuficiente: .asciiz "Error: Stock insuficiente\n"
-msg_compra_vacia: .asciiz "Error: Compra vacia\n"
-msg_demasiados_eliminar: .asciiz "Error: Demasiados productos para eliminar\n"
-msg_total_compra: .asciiz "Total Compra: $"
-msg_cierre_caja: .asciiz "=== CIERRE DE CAJA ===\n"
-msg_separador: .asciiz "-----------------------------\n"
-nueva_linea: .asciiz "\n"
-espacio: .asciiz " "
-igual: .asciiz " = $"
-signo_dolar: .asciiz "$"
-signo_peso: .asciiz " x"
-punto: .asciiz "."
-stock_msg: .asciiz " stock "
-guion: .asciiz "-"
+	# punteros a lista enlazada
+	head: 		.word 0   # cabeza de la lista
+	tail: 		.word 0   # fin de ella
+	medio:		.word 0  # inicio de la nueva co
 
-input_buffer: .space 32
-
-# Tamaño de nodo para lista enlazada
-.eqv nodo_size 16
-
-# Direcciones MMIO
-.eqv DATA_IN 0xffff0004
-.eqv CTRL_IN 0xffff0000  
-.eqv DATA_OUT 0xffff000c
-.eqv CTRL_OUT 0xffff0008
+	# arreglo de punteros a estructuras-articulos
+	productos: 	.word p001, p002, p003, p004, p005, p006, p007, p008, p009, p010, p011, p012, p013, p014
 
 .text
 .globl main
 
-main:
-    # Inicializar sistema
-    jal inicializar_tabla_hash
-    jal inicializar_ventas_dia
-    jal inicializar_compra
-    
-    # Mensaje de bienvenida usando syscall (para ver si al menos esto aparece)
-    li $v0, 4
-    la $a0, msg_bienvenida
-    syscall
-    la $a0, msg_instrucciones
-    syscall
-    
-    # Intentar con MMIO
-    la $a0, msg_bienvenida
-    jal print_string
-    la $a0, msg_instrucciones
-    jal print_string
-    la $a0, msg_prompt
-    jal print_string
-    
-    jal main_loop_mmio
-    
-    li $v0, 10
-    syscall
-
-main_loop_mmio:
-    # Leer carácter usando MMIO
-    jal read_char
-    
-    # Procesar carácter
-    move $a0, $v0
-    jal process_input
-    
-    j main_loop_mmio
-
-# ========== FUNCIONES MMIO ==========
-
-# Leer un carácter del teclado MMIO
-read_char:
-    li $t0, CTRL_IN
-read_wait:
-    lw $t1, 0($t0)
-    andi $t1, $t1, 1
-    beqz $t1, read_wait
-    lw $v0, DATA_IN
-    jr $ra
-
-# Imprimir string usando MMIO
-print_string:
-    move $t3, $a0
-print_loop:
-    lb $t4, 0($t3)
-    beqz $t4, print_done
-    
-    # Esperar a que display esté listo
-    li $t5, CTRL_OUT
-print_wait:
-    lw $t6, 0($t5)
-    andi $t6, $t6, 1
-    beqz $t6, print_wait
-    
-    # Imprimir carácter
-    li $t7, DATA_OUT
-    sb $t4, 0($t7)
-    
-    addi $t3, $t3, 1
-    j print_loop
-print_done:
-    jr $ra
-
-# Imprimir un carácter usando MMIO
-print_char:
-    # Esperar a que display esté listo
-    li $t5, CTRL_OUT
-char_wait:
-    lw $t6, 0($t5)
-    andi $t6, $t6, 1
-    beqz $t6, char_wait
-    
-    # Imprimir carácter
-    li $t7, DATA_OUT
-    sb $a0, 0($t7)
-    jr $ra
-
-# Procesar entrada del teclado
-process_input:
-    move $s0, $a0
-    
-    # Si es Enter, procesar comando
-    li $t0, 10
-    beq $s0, $t0, process_command
-    li $t0, 13
-    beq $s0, $t0, process_command
-    
-    # Si es backspace
-    li $t0, 8
-    beq $s0, $t0, handle_backspace
-    
-    # Guardar en buffer y mostrar eco
-    lb $t1, input_buffer
-    beqz $t1, first_char
-    j save_char
-
-first_char:
-    sb $s0, input_buffer
-    move $a0, $s0
-    jal print_char
-    jr $ra
-
-save_char:
-    li $t2, 1
-    sb $s0, input_buffer($t2)
-    move $a0, $s0
-    jal print_char
-    jr $ra
-
-handle_backspace:
-    # Simplemente limpiar buffer
-    sb $zero, input_buffer
-    sb $zero, input_buffer+1
-    li $a0, 8
-    jal print_char
-    li $a0, ' '
-    jal print_char
-    li $a0, 8
-    jal print_char
-    jr $ra
-
-process_command:
-    # Nueva línea
-    la $a0, nueva_linea
-    jal print_string
-    
-    # Procesar comando
-    la $a0, input_buffer
-    jal procesar_comando
-    
-    # Limpiar buffer
-    sb $zero, input_buffer
-    sb $zero, input_buffer+1
-    
-    # Mostrar prompt
-    la $a0, msg_prompt
-    jal print_string
-    
-    jr $ra
-
-# ========== FUNCIONES ORIGINALES (modificadas para usar MMIO) ==========
-
-# [Todas las funciones anteriores se mantienen igual, pero cambiamos los syscall por MMIO]
-
-inicializar_tabla_hash:
-    la $a1, p001
-    lw $a0, 0($a1)
-    jal insertar
-    la $a1, p002
-    lw $a0, 0($a1)
-    jal insertar
-    la $a1, p003
-    lw $a0, 0($a1)
-    jal insertar
-    la $a1, p004
-    lw $a0, 0($a1)
-    jal insertar
-    la $a1, p005
-    lw $a0, 0($a1)
-    jal insertar
-    jr $ra
-
-inicializar_ventas_dia:
-    la $t0, ventas_dia
-    li $t1, 0
-    li $t2, 5
-init_ventas_loop:
-    sw $zero, 0($t0)
-    addi $t0, $t0, 4
-    addi $t1, $t1, 1
-    blt $t1, $t2, init_ventas_loop
-    jr $ra
-
-inicializar_compra:
-    sw $zero, compra_head
-    sw $zero, compra_tail
-    sw $zero, compra_count
-    sw $zero, compra_total
-    jr $ra
-
-hash_func:
-    li $t0, 10
-    div $a0, $t0
-    mfhi $v0
-    jr $ra
-
-insertar:
-    addi $sp, $sp, -4
-    sw $ra, 0($sp)
-    jal hash_func
-    la $t1, tabla_hash
-    sll $t2, $v0, 2
-    add $t3, $t1, $t2
-    sw $a1, 0($t3)
-    lw $ra, 0($sp)
-    addi $sp, $sp, 4
-    jr $ra
-
-buscar:
-    addi $sp, $sp, -4
-    sw $ra, 0($sp)
-    jal hash_func
-    la $t1, tabla_hash
-    sll $t2, $v0, 2
-    add $t3, $t1, $t2
-    lw $v0, 0($t3)
-    lw $ra, 0($sp)
-    addi $sp, $sp, 4
-    jr $ra
-
-procesar_comando:
-    move $s0, $a0
-    lb $t0, 0($s0)
-    
-    # Si es número
-    li $t1, '0'
-    blt $t0, $t1, check_operadores
-    li $t1, '9'
-    bgt $t0, $t1, check_operadores
-    j comando_numero
-
-check_operadores:
-    li $t1, '*'
-    beq $t0, $t1, comando_multiplicacion
-    li $t1, '-'
-    beq $t0, $t1, comando_resta
-    li $t1, '+'
-    beq $t0, $t1, comando_suma
-    li $t1, '/'
-    beq $t0, $t1, comando_division
-    jr $ra
-
-comando_numero:
-    move $a0, $s0
-    jal string_a_entero
-    move $s1, $v0
-    move $a0, $s1
-    jal buscar
-    move $s2, $v0
-    beqz $s2, error_no_encontrado
-    lw $t0, 4($s2)
-    blez $t0, error_stock_insuficiente
-    move $a0, $s2
-    li $a1, 1
-    jal agregar_a_compra
-    move $a0, $s2
-    li $a1, 1
-    jal imprimir_producto
-    jr $ra
-
-comando_multiplicacion:
-    addi $a0, $s0, 1
-    jal string_a_entero
-    move $s1, $v0
-    lw $t0, compra_count
-    beqz $t0, error_compra_vacia
-    lw $s2, compra_tail
-    lw $s3, 0($s2)
-    lw $t0, 4($s3)
-    blt $t0, $s1, error_stock_insuficiente
-    lw $t1, 4($s2)
-    sub $t2, $s1, $t1
-    sw $s1, 4($s2)
-    lw $t0, 4($s3)
-    sub $t0, $t0, $t2
-    sw $t0, 4($s3)
-    move $a0, $s3
-    move $a1, $t2
-    jal actualizar_ventas
-    jal recalcular_total_compra
-    move $a0, $s3
-    move $a1, $s1
-    jal imprimir_producto
-    jr $ra
-
-comando_resta:
-    addi $a0, $s0, 1
-    jal string_a_entero
-    move $s1, $v0
-    lw $t0, compra_count
-    beqz $t0, error_compra_vacia
-    bgt $s1, $t0, error_demasiados_eliminar
-    move $a0, $s1
-    jal eliminar_ultimos_productos
-    jr $ra
-
-comando_suma:
-    jal imprimir_total_compra
-    jal inicializar_compra
-    jr $ra
-
-comando_division:
-    jal imprimir_cierre_caja
-    jal inicializar_ventas_dia
-    jr $ra
-
-# [Las funciones agregar_a_compra, actualizar_ventas, eliminar_ultimos_productos, etc. 
-# se mantienen exactamente iguales a las que tenías en tu código original]
-
-agregar_a_compra:
-    move $s0, $a0
-    move $s1, $a1
-    li $v0, 9
-    li $a0, nodo_size
-    syscall
-    move $s2, $v0
-    sw $s0, 0($s2)
-    sw $s1, 4($s2)
-    sw $zero, 8($s2)
-    lw $t0, 8($s0)
-    lw $t1, 12($s0)
-    mul $t2, $t0, 100
-    add $t2, $t2, $t1
-    mul $t2, $t2, $s1
-    sw $t2, 12($s2)
-    lw $t0, compra_tail
-    beqz $t0, primera_agregacion
-    sw $s2, 8($t0)
-    sw $s2, compra_tail
-    j actualizar_estado
-
-primera_agregacion:
-    sw $s2, compra_head
-    sw $s2, compra_tail
-
-actualizar_estado:
-    lw $t0, compra_count
-    addi $t0, $t0, 1
-    sw $t0, compra_count
-    lw $t0, 4($s0)
-    sub $t0, $t0, $s1
-    sw $t0, 4($s0)
-    move $a0, $s0
-    move $a1, $s1
-    jal actualizar_ventas
-    jal recalcular_total_compra
-    jr $ra
-
-actualizar_ventas:
-    move $s0, $a0
-    move $s1, $a1
-    la $t0, p001
-    beq $s0, $t0, ventas_p001
-    la $t0, p002
-    beq $s0, $t0, ventas_p002
-    la $t0, p003
-    beq $s0, $t0, ventas_p003
-    la $t0, p004
-    beq $s0, $t0, ventas_p004
-    la $t0, p005
-    beq $s0, $t0, ventas_p005
-    jr $ra
-
-ventas_p001:
-    la $t0, ventas_dia
-    lw $t1, 0($t0)
-    add $t1, $t1, $s1
-    sw $t1, 0($t0)
-    jr $ra
-
-ventas_p002:
-    la $t0, ventas_dia
-    lw $t1, 4($t0)
-    add $t1, $t1, $s1
-    sw $t1, 4($t0)
-    jr $ra
-
-ventas_p003:
-    la $t0, ventas_dia
-    lw $t1, 8($t0)
-    add $t1, $t1, $s1
-    sw $t1, 8($t0)
-    jr $ra
-
-ventas_p004:
-    la $t0, ventas_dia
-    lw $t1, 12($t0)
-    add $t1, $t1, $s1
-    sw $t1, 12($t0)
-    jr $ra
-
-ventas_p005:
-    la $t0, ventas_dia
-    lw $t1, 16($t0)
-    add $t1, $t1, $s1
-    sw $t1, 16($t0)
-    jr $ra
-
-eliminar_ultimos_productos:
-    move $s0, $a0
-    lw $s1, compra_count
-    bne $s0, $s1, eliminar_parcial
-    jal inicializar_compra
-    j eliminar_fin
-
-eliminar_parcial:
-    lw $t0, compra_count
-    sub $t0, $t0, $s0
-    move $a0, $t0
-    jal encontrar_nodo_posicion
-    move $s1, $v0
-    lw $s2, 8($s1)
-    sw $zero, 8($s1)
-    sw $s1, compra_tail
-    move $a0, $s2
-    jal liberar_lista
-    lw $t0, compra_count
-    sub $t0, $t0, $s0
-    sw $t0, compra_count
-    jal recalcular_total_compra
-
-eliminar_fin:
-    jr $ra
-
-encontrar_nodo_posicion:
-    move $s0, $a0
-    lw $s1, compra_head
-    li $s2, 0
-encontrar_loop:
-    beq $s2, $s0, encontrar_end
-    lw $s1, 8($s1)
-    addi $s2, $s2, 1
-    j encontrar_loop
-encontrar_end:
-    move $v0, $s1
-    jr $ra
-
-liberar_lista:
-    move $s0, $a0
-liberar_loop:
-    beqz $s0, liberar_end
-    move $s1, $s0
-    lw $s0, 8($s0)
-    la $a0, guion
-    jal print_string
-    lw $a0, 0($s1)
-    lw $a1, 4($s1)
-    jal imprimir_producto_simple
-    lw $t0, 0($s1)
-    lw $t1, 4($s1)
-    lw $t2, 4($t0)
-    add $t2, $t2, $t1
-    sw $t2, 4($t0)
-    move $a0, $t0
-    move $a1, $t1
-    jal actualizar_ventas_negativo
-    move $a0, $s1
-    li $v0, 9
-    syscall
-    j liberar_loop
-liberar_end:
-    jr $ra
-
-actualizar_ventas_negativo:
-    move $s0, $a0
-    move $s1, $a1
-    la $t0, p001
-    beq $s0, $t0, ventas_neg_p001
-    la $t0, p002
-    beq $s0, $t0, ventas_neg_p002
-    la $t0, p003
-    beq $s0, $t0, ventas_neg_p003
-    la $t0, p004
-    beq $s0, $t0, ventas_neg_p004
-    la $t0, p005
-    beq $s0, $t0, ventas_neg_p005
-    jr $ra
-
-ventas_neg_p001:
-    la $t0, ventas_dia
-    lw $t1, 0($t0)
-    sub $t1, $t1, $s1
-    sw $t1, 0($t0)
-    jr $ra
-
-ventas_neg_p002:
-    la $t0, ventas_dia
-    lw $t1, 4($t0)
-    sub $t1, $t1, $s1
-    sw $t1, 4($t0)
-    jr $ra
-
-ventas_neg_p003:
-    la $t0, ventas_dia
-    lw $t1, 8($t0)
-    sub $t1, $t1, $s1
-    sw $t1, 8($t0)
-    jr $ra
-
-ventas_neg_p004:
-    la $t0, ventas_dia
-    lw $t1, 12($t0)
-    sub $t1, $t1, $s1
-    sw $t1, 12($t0)
-    jr $ra
-
-ventas_neg_p005:
-    la $t0, ventas_dia
-    lw $t1, 16($t0)
-    sub $t1, $t1, $s1
-    sw $t1, 16($t0)
-    jr $ra
-
-recalcular_total_compra:
-    li $s0, 0
-    lw $s1, compra_head
-    beqz $s1, recalcular_end
-recalcular_loop:
-    lw $t0, 12($s1)
-    add $s0, $s0, $t0
-    lw $s1, 8($s1)
-    bnez $s1, recalcular_loop
-recalcular_end:
-    sw $s0, compra_total
-    jr $ra
-
-imprimir_producto:
-    move $s0, $a0
-    move $s1, $a1
-    addi $a0, $s0, 16
-    jal print_string
-    la $a0, espacio
-    jal print_string
-    la $a0, signo_dolar
-    jal print_string
-    lw $a0, 8($s0)
-    jal print_integer
-    la $a0, punto
-    jal print_string
-    lw $a0, 12($s0)
-    move $s2, $a0
-    bge $s2, 10, imprimir_centavos
-    li $a0, '0'
-    jal print_char
-    lw $a0, 12($s0)
-    jal print_integer
-    j after_centavos
-
-imprimir_centavos:
-    jal print_integer
-
-after_centavos:
-    li $t0, 1
-    ble $s1, $t0, imprimir_fin
-    la $a0, signo_peso
-    jal print_string
-    move $a0, $s1
-    jal print_integer
-    la $a0, igual
-    jal print_string
-    la $a0, signo_dolar
-    jal print_string
-    lw $t0, 8($s0)
-    lw $t1, 12($s0)
-    mul $t2, $t0, 100
-    add $t2, $t2, $t1
-    mul $t2, $t2, $s1
-    move $a0, $t2
-    jal imprimir_precio
-
-imprimir_fin:
-    la $a0, nueva_linea
-    jal print_string
-    jr $ra
-
-imprimir_producto_simple:
-    move $s0, $a0
-    move $s1, $a1
-    addi $a0, $s0, 16
-    jal print_string
-    li $t0, 1
-    ble $s1, $t0, imprimir_simple_fin
-    la $a0, signo_peso
-    jal print_string
-    move $a0, $s1
-    jal print_integer
-    la $a0, espacio
-    jal print_string
-
-imprimir_simple_fin:
-    la $a0, nueva_linea
-    jal print_string
-    jr $ra
-
-imprimir_precio:
-    move $s0, $a0
-    li $t0, 100
-    div $s0, $t0
-    mflo $s1
-    mfhi $s2
-    move $a0, $s1
-    jal print_integer
-    la $a0, punto
-    jal print_string
-    move $a0, $s2
-    bge $s2, 10, imprimir_precio_centavos
-    li $a0, '0'
-    jal print_char
-    move $a0, $s2
-    jal print_integer
-    jr $ra
-
-imprimir_precio_centavos:
-    jal print_integer
-    jr $ra
-
-print_integer:
-    # Función para imprimir enteros usando MMIO
-    move $t0, $a0
-    li $t1, 0
-    li $t2, 10
-    
-    # Caso especial para 0
-    bnez $t0, not_zero
-    li $a0, '0'
-    jal print_char
-    jr $ra
-
-not_zero:
-    # Convertir a string en la pila
-    addi $sp, $sp, -12
-    move $t3, $sp
-    
+# Convierte ASCII a entero
+# Entrada: a0 = puntero al inicio de la cadena de dígitos
+# Salida: v0 = entero convertido
+ascii_to_int:
+    	li   $v0, 0                	# acumulador
 convert_loop:
-    beqz $t0, convert_done
-    div $t0, $t2
-    mfhi $t4
-    mflo $t0
-    addi $t4, $t4, '0'
-    sb $t4, 0($t3)
-    addi $t3, $t3, 1
-    addi $t1, $t1, 1
-    j convert_loop
-
+    	lb   $t7, 0($a0)          	# leer char actual
+    	beqz $t7, convert_done   	# fin en byte 0
+    	beq  $t7, 10, convert_done	# fin en '\n'
+    	blt  $t7, '0', convert_done	# El carácter '0' tiene valor ASCII 48.
+    	bgt  $t7, '9', convert_done	# El carácter '9' tiene valor ASCII 57.
+   	addi $t7, $t7, -48       	# char -> dígito
+    	mul  $v0, $v0, 10	
+   	add  $v0, $v0, $t7
+    	addi $a0, $a0, 1
+    	j    convert_loop
 convert_done:
-    # Imprimir en orden inverso
-    move $t3, $sp
-    add $t3, $t3, $t1
-    addi $t3, $t3, -1
+    	jr   $ra
 
-print_loop_int:
-    bltz $t1, print_int_done
-    lb $a0, 0($t3)
-    jal print_char
-    addi $t3, $t3, -1
-    addi $t1, $t1, -1
-    j print_loop_int
+# Verificar y reducir stock de un producto
+# Entrada: $a0 = puntero a estructura del producto
+# Salida: $v0 = 1 si hay stock, 0 si está agotado
+check_and_reduce_stock:
+    	addi $sp, $sp, -8
+    	sw   $ra, 4($sp)
+    	sw   $a0, 0($sp)
+    	# Verificar stock (posición +4 en la estructura)
+    	lw   $t0, 4($a0)          	# Cargar stock actual
+   	blez $t0, stock_empty   	# Si stock <= 0, está agotado
+    	# Reducir stock en 1
+    	addi $t0, $t0, -1
+    	sw   $t0, 4($a0)          	# Guardar stock actualizado
+    	li   $v0, 1               	# Retornar éxito
+    	j    stock_done
 
-print_int_done:
-    addi $sp, $sp, 12
-    jr $ra
+stock_empty:
+    	li   $v0, 0               	# Retornar error
 
-imprimir_total_compra:
-    la $a0, msg_total_compra
-    jal print_string
-    lw $a0, compra_total
-    jal imprimir_precio
-    la $a0, nueva_linea
-    jal print_string
-    jr $ra
+stock_done:
+    	lw   $a0, 0($sp)
+    	lw   $ra, 4($sp)
+    	addi $sp, $sp, 8
+    	jr   $ra
 
-imprimir_cierre_caja:
-    la $a0, msg_cierre_caja
-    jal print_string
-    li $s7, 0
-    la $a0, p001
-    jal imprimir_producto_cierre
-    move $s0, $v0
-    add $s7, $s7, $s0
-    la $a0, p002
-    jal imprimir_producto_cierre
-    move $s0, $v0
-    add $s7, $s7, $s0
-    la $a0, p003
-    jal imprimir_producto_cierre
-    move $s0, $v0
-    add $s7, $s7, $s0
-    la $a0, p004
-    jal imprimir_producto_cierre
-    move $s0, $v0
-    add $s7, $s7, $s0
-    la $a0, p005
-    jal imprimir_producto_cierre
-    move $s0, $v0
-    add $s7, $s7, $s0
-    la $a0, msg_separador
-    jal print_string
-    la $a0, msg_total_compra
-    jal print_string
-    move $a0, $s7
-    jal imprimir_precio
-    la $a0, nueva_linea
-    jal print_string
-    jr $ra
+# Restaurar stock por código (EVITA PROBLEMAS DE ALINEACIÓN)
+# Entrada: $a0 = código del producto
+restore_stock_by_code:
+    	addi $sp, $sp, -16
+    	sw   $ra, 12($sp)
+    	sw   $s0, 8($sp)
+    	sw   $s1, 4($sp)
+    	sw   $s2, 0($sp)
+    	# Buscar el producto por código en el array de productos
+    	la   $s0, productos
+    	li   $s1, 14              
+    
+search_by_code_loop:
+    	beqz $s1, restore_done_code
+    	lw   $s2, 0($s0)          # Cargar puntero a estructura
+    	lw   $t0, 0($s2)          # Código del producto
+    	beq  $t0, $a0, found_code_restore
+    
+    	addi $s0, $s0, 4
+    	addi $s1, $s1, -1
+    	j search_by_code_loop
 
-imprimir_producto_cierre:
-    move $s0, $a0
-    la $t0, p001
-    beq $s0, $t0, cierre_p001
-    la $t0, p002
-    beq $s0, $t0, cierre_p002
-    la $t0, p003
-    beq $s0, $t0, cierre_p003
-    la $t0, p004
-    beq $s0, $t0, cierre_p004
-    la $t0, p005
-    beq $s0, $t0, cierre_p005
-    li $s1, 0
-    j cierre_imprimir
+found_code_restore:
+    	# Encontrado, aumentar stock en 1
+    	lw   $t1, 4($s2)          # Stock actual
+    	addi $t1, $t1, 1
+    	sw   $t1, 4($s2)          # Guardar stock actualizado
 
-cierre_p001:
-    la $t0, ventas_dia
-    lw $s1, 0($t0)
-    j cierre_imprimir
+restore_done_code:
+    	lw   $s2, 0($sp)
+    	lw   $s1, 4($sp)
+    	lw   $s0, 8($sp)
+    	lw   $ra, 12($sp)
+    	addi $sp, $sp, 16
+    	jr   $ra
 
-cierre_p002:
-    la $t0, ventas_dia
-    lw $s1, 4($t0)
-    j cierre_imprimir
+# Mostrar stock actual de todos los productos
+show_stock:
+    	addi $sp, $sp, -12
+    	sw   $ra, 8($sp)
+    	sw   $s0, 4($sp)
+    	sw   $s1, 0($sp)
+    
+    	# Imprimir header
+    		la $a0, stock_header
+    		li $v0, 4
+    	syscall
+    
+    	# Recorrer todos los productos
+    	la   $s0, productos
+    	li   $s1, 14
+    
+stock_loop:
+    	beqz $s1, stock_done_show
+    	lw   $t0, 0($s0)          # Cargar puntero a estructura
+    
+    	# Imprimir nombre del producto
+    		addi $a0, $t0, 16       # Puntero al nombre
+    		li   $v0, 4
+    	syscall
+    
+    	# Imprimir "Stock: "
+    		la   $a0, stock_item
+    		li   $v0, 4
+    	syscall
+    
+    	# Imprimir cantidad de stock
+    		lw   $a0, 4($t0)          # Stock actual
+    		li   $v0, 1
+    	syscall
+    
+    	# Nueva línea
+    		la   $a0, newline
+    		li   $v0, 4
+    	syscall
+    
+    	addi $s0, $s0, 4
+    	addi $s1, $s1, -1
+    	j stock_loop
 
-cierre_p003:
-    la $t0, ventas_dia
-    lw $s1, 8($t0)
-    j cierre_imprimir
+stock_done_show:
+    	lw   $s1, 0($sp)
+    	lw   $s0, 4($sp)
+    	lw   $ra, 8($sp)
+    	addi $sp, $sp, 12
+    	jr   $ra
 
-cierre_p004:
-    la $t0, ventas_dia
-    lw $s1, 12($t0)
-    j cierre_imprimir
+# reduce_stock_by_code: reducir stock por codigo
+# Entrada: a0 = codigo, a1 = n (entero, >0)
+# Salida: v0 = 1 si correcto, 0 si no (producto no encontrado o stock insuficiente)
+reduce_stock_by_code:
+    	addi $sp, $sp, -16
+    	sw   $ra, 12($sp)
+    	sw   $s0, 8($sp)
+    	sw   $s1, 4($sp)
+    	sw   $s2, 0($sp)
+    	la   $s0, productos
+   	li   $s1, 14           # ajustar si el arreglo tiene otro tamaño
 
-cierre_p005:
-    la $t0, ventas_dia
-    lw $s1, 16($t0)
-    j cierre_imprimir
+search_rs_loop:
+    	beqz $s1, rs_not_found
+    	lw   $s2, 0($s0)      # puntero a estructura producto
+    	lw   $t0, 0($s2)      # codigo del producto en la estructura
+    	beq  $t0, $a0, rs_found
+    	addi $s0, $s0, 4
+    	addi $s1, $s1, -1
+    	j    search_rs_loop
 
-cierre_imprimir:
-    beqz $s1, cierre_sin_ventas
-    addi $a0, $s0, 16
-    jal print_string
-    la $a0, signo_peso
-    jal print_string
-    move $a0, $s1
-    jal print_integer
-    la $a0, stock_msg
-    jal print_string
-    lw $a0, 4($s0)
-    jal print_integer
-    la $a0, espacio
-    jal print_string
-    la $a0, signo_dolar
-    jal print_string
-    lw $a0, 8($s0)
-    jal print_integer
-    la $a0, punto
-    jal print_string
-    lw $a0, 12($s0)
-    move $s2, $a0
-    bge $s2, 10, cierre_centavos
-    li $a0, '0'
-    jal print_char
-    move $a0, $s2
-    jal print_integer
-    j after_cierre_centavos
+rs_not_found:
+    		la  $a0, notfound
+    		li  $v0, 4
+    	syscall
+    	
+    	li  $v0, 0
+    	j   rs_done
 
-cierre_centavos:
-    jal print_integer
+rs_found:
+    	# s2 apunta a la estructura del producto
+    	lw   $t1, 4($s2)      # stock actual
+    	blez $t1, rs_out_of_stock
+    	move $t2, $a1         # cantidad a reducir (n)
+    	sub  $t3, $t1, $t2
+    	bltz $t3, rs_out_of_stock
+    	# actualizar stock
+    	sw   $t3, 4($s2)
+    	li   $v0, 1
+    	j    rs_done
 
-after_cierre_centavos:
-    la $a0, nueva_linea
-    jal print_string
+rs_out_of_stock:
+    		la  $a0, out_of_stock
+    		li  $v0, 4
+   	syscall
+    
+    	li   $v0, 0
 
-cierre_sin_ventas:
-    lw $t0, 8($s0)
-    lw $t1, 12($s0)
-    mul $t2, $t0, 100
-    add $t2, $t2, $t1
-    mul $t2, $t2, $s1
-    move $v0, $t2
-    jr $ra
+rs_done:
+    	lw   $s2, 0($sp)
+    	lw   $s1, 4($sp)
+    	lw   $s0, 8($sp)
+    	lw   $ra, 12($sp)
+    	addi $sp, $sp, 16
+    	jr   $ra
 
-string_a_entero:
-    move $s0, $a0
-    li $s1, 0
-    li $s2, 10
-string_loop:
-    lb $s3, 0($s0)
-    beqz $s3, string_end
-    beq $s3, 10, string_end
-    beq $s3, 13, string_end
-    blt $s3, '0', string_end
-    bgt $s3, '9', string_end
-    sub $s3, $s3, '0'
-    mul $s1, $s1, $s2
-    add $s1, $s1, $s3
-    addi $s0, $s0, 1
-    j string_loop
-string_end:
-    move $v0, $s1
-    jr $ra
+do_multiply:
+    	# Factor está en buffer+1
+    	la   $a0, buffer+1
+    	jal  ascii_to_int
+    	move $t6, $v0
+    	# Tomar último nodo
+    	la      $t3, tail
+    	lw      $t4, 0($t3)
+    	beqz    $t4, not_found
+    	lwc1    $f4, 0($t4)
+    	lw      $a0, 4($t4)
+    	lw      $t2, 8($t4)
+    	move    $t8, $a0
+    	mtc1    $t6, $f6
+    	cvt.s.w $f6, $f6
+    	mul.s   $f12, $f4, $f6
+    	swc1    $f12, 0($t4)	
+    	# Opción A: reducir inventario global en n unidades (recomendado)
+    	move    $a0, $t2           # a0 = código
+    	move    $a1, $t6           # a1 = n
+    	jal  reduce_stock_by_code
+    	 
+    		move $a0, $t8
+    		li   $v0, 4
+    	syscall
 
-error_no_encontrado:
-    la $a0, msg_producto_no_encontrado
-    jal print_string
-    jr $ra
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
 
-error_stock_insuficiente:
-    la $a0, msg_stock_insuficiente
-    jal print_string
-    jr $ra
+    		li   $a0, 'x'
+    		li   $v0, 11
+    	syscall
 
-error_compra_vacia:
-    la $a0, msg_compra_vacia
-    jal print_string
-    jr $ra
+    		move $a0, $t6
+    		li   $v0, 1
+    	syscall
 
-error_demasiados_eliminar:
-    la $a0, msg_demasiados_eliminar
-    jal print_string
-    jr $ra
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+
+    		li   $a0, '='
+    		li   $v0, 11
+    	syscall
+
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, signo_dolar
+    		li   $v0, 4
+    	syscall
+
+    		li   $v0, 2
+    	syscall
+
+    		la   $a0, newline
+    		li   $v0, 4
+    	syscall
+    
+    j loop_input
+
+# Añadir nodo a lista (head/tail) - MODIFICADO PARA INCLUIR CÓDIGO
+# a0 = puntero a nombre, f12 = precio, a2 = código del producto
+add_to_list:
+    	addi $sp, $sp, -8
+    	sw   $ra, 4($sp)
+    	sw   $s0, 0($sp) 
+    	
+    		li $v0, 9
+    		li $a0, 16              # 16 bytes para el nodo (4 más para el código)
+    	syscall
+    
+    	move $t0, $v0         # nuevo nodo
+    	swc1 $f12, 0($t0)     # precio
+    	sw   $a1, 4($t0)      # puntero a nombre
+    	sw   $a2, 8($t0)      # código del producto
+    	sw   $zero, 12($t0)   # siguiente = 0
+    	la   $t1, head
+    	lw   $t2, 0($t1)
+    	beqz $t2, first_node
+    	la   $t3, tail
+    	lw   $t4, 0($t3)
+    	sw   $t0, 12($t4)       # tail->next = nuevo
+    	j    update_tail
+
+first_node:
+    	sw $t0, 0($t1)        # head = nuevo
+
+update_tail:
+    	la   $t3, tail
+    	sw   $t0, 0($t3)          # tail = nuevo
+   	# establecer medio si es la primera entrada de la compra activa
+    	la   $t5, medio
+    	lw   $t6, 0($t5)
+    	bnez $t6, skip_set_medio
+    	la   $t7, medio
+    	sw   $t0, 0($t7)        # medio = nuevo nodo
+    
+skip_set_medio:
+    	lw   $s0, 0($sp)
+    	lw   $ra, 4($sp)
+    	addi $sp, $sp, 8
+    	jr   $ra
+
+# print_purchase_from_medio: imprime y muestra total desde medio hasta tail
+# Convención: no cambia registros $s* sin preservarlos; usa $f0 como acumulador
+print_purchase_from_medio:
+    	addi $sp, $sp, -12
+    	sw   $ra, 8($sp)
+    	sw   $s0, 4($sp)
+    	sw   $s1, 0($sp)
+	la   $s0, medio
+    	lw   $s0, 0($s0)        # s0 = medio
+    	beqz $s0, pp_none       # si no hay compra activa
+   	mtc1 $zero, $f0         # f0 = 0.0 total parcial
+
+pp_loop:
+    	lwc1  $f2, 0($s0)        # precio de nodo
+    	add.s $f0, $f0, $f2
+    	lw    $s0, 12($s0)       # siguiente
+    	bnez  $s0, pp_loop
+    	
+    	# imprimir etiqueta y total parcial
+    		la    $a0, total_label
+    		li    $v0, 4
+    	syscall
+    	
+    		la    $a0, signo_dolar
+    		li    $v0, 4
+    	syscall
+    	
+    		mov.s $f12, $f0
+    		li    $v0, 2
+    	syscall
+    	
+    		la    $a0, newline
+    		li    $v0, 4
+    	syscall
+
+    	j pp_done
+
+pp_none:
+    	# Si no hay compra activa, imprimir total 0.0 (sin error)
+    		la   $a0, total_label
+    		li   $v0, 4
+    	syscall
+    	
+    		la   $a0, signo_dolar
+    		li   $v0, 4
+    	syscall
+    	
+    		mtc1 $zero, $f12
+    		li   $v0, 2
+    	syscall
+    	
+    		la   $a0, newline
+    		li   $v0, 4
+    	syscall
+
+pp_done:
+    	lw   $s1, 0($sp)
+    	lw   $s0, 4($sp)
+    	lw   $ra, 8($sp)
+    	addi $sp, $sp, 12
+    	jr   $ra
+
+
+# Imprimir "Nombre    $precio"
+print_product:
+    		move $t8, $a0
+    		move $a0, $t8	# Se hizo para evitar posibles errores en los registros
+    		li   $v0, 4
+    	syscall
+    	
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+    
+    		la   $a0, signo_dolar
+    		li   $v0, 4
+    	syscall
+    
+    		li   $v0, 2
+    	syscall
+    	
+    		la   $a0, newline
+    		li   $v0, 4
+   	syscall
+    
+    	jr $ra
+ 
+call_print:
+    	jal print_list_and_total
+    	j loop_input
+    
+print_list_and_total:
+   	addi  $sp, $sp, -8
+    	sw    $ra, 4($sp)
+    	sw    $s0, 0($sp)
+    	li    $t9, 0
+    	mtc1  $t9, $f0
+    	la    $t1, head
+    	lw    $t1, 0($t1)
+    	beqz  $t1, plt_print_total_only
+
+plt_loop:
+    	lwc1  $f2, 0($t1)
+    	add.s $f0, $f0, $f2
+    	lw    $t1, 12($t1)     # siguiente nodo
+    	bnez  $t1, plt_loop
+
+plt_print_total_only:
+    		la    $a0, total_label
+    		li    $v0, 4
+    	syscall
+    
+    		la    $a0, signo_dolar
+    		li    $v0, 4
+    	syscall
+    
+    		mov.s $f12, $f0
+    		li    $v0, 2
+    	syscall
+    
+    		la    $a0, newline
+    		li    $v0, 4
+    	syscall
+    
+    	lw   $s0, 0($sp)
+    	lw   $ra, 4($sp)
+    	addi $sp, $sp, 8
+    	jr   $ra
+
+call_remove:
+    	jal remove_last_n
+    	j loop_input
+
+# remove_last_n: eliminar últimos n nodos e imprimirlos como negativos
+remove_last_n:
+    	addi $sp, $sp, -24
+    	sw   $ra, 20($sp)
+    	sw   $s0, 16($sp)
+    	sw   $s1, 12($sp)
+    	sw   $s2, 8($sp)
+    	sw   $s3, 4($sp)
+    	sw   $s4, 0($sp)
+    	la   $a0, buffer+1
+    	jal  ascii_to_int
+    	move $s0, $v0
+    	la   $s1, head
+    	lw   $s1, 0($s1)
+    	li   $s2, 0
+
+count_loop:
+    	beqz $s1, count_done
+    	addi $s2, $s2, 1
+    	lw   $s1, 12($s1)
+    	j    count_loop
+
+count_done:
+    	ble  $s0, $s2, remove_ok
+    	
+    		la   $a0, error
+    		li   $v0, 4
+   	syscall
+   	
+    	j    remove_end
+
+remove_ok:
+remove_loop:
+    	beqz $s0, remove_end
+    	la   $t0, tail
+    	lw   $t0, 0($t0)
+    	beqz $t0, remove_end
+    	lwc1 $f2, 0($t0)
+    	lw   $t1, 4($t0)
+    	lw   $t2, 8($t0)
+
+    		li   $a0, '-'
+    		li   $v0, 11
+    	syscall
+    
+    		move $a0, $t1
+    		li   $v0, 4
+    	syscall
+    	
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+    
+    		neg.s $f12, $f2
+    		li   $v0, 2
+    	syscall
+    	
+    		la   $a0, newline
+    		li   $v0, 4
+    	syscall
+
+    # RESTAURAR STOCK USANDO EL CÓDIGO
+   	move $a0, $t2
+    	jal  restore_stock_by_code
+    	la   $t0, tail
+    	lw   $t0, 0($t0)
+    	la   $s1, head
+    	lw   $s1, 0($s1)
+    	beq  $s1, $t0, remove_tail_is_head
+
+find_prev:
+    	lw   $s3, 12($s1)         # s3 = s1->next
+    	beq  $s3, $t0, found_prev
+    	move $s1, $s3
+    	j    find_prev
+
+found_prev:
+    	sw   $zero, 12($s1)
+    	la   $t2, tail
+    	sw   $s1, 0($t2)
+    	j    after_remove
+
+remove_tail_is_head:
+    	la   $t2, head
+    	sw   $zero, 0($t2)
+    	la   $t2, tail
+    	sw   $zero, 0($t2)
+    	j after_remove
+
+after_remove:
+    	addi $s0, $s0, -1
+    	j    remove_loop
+
+remove_end:
+    	lw   $s4, 0($sp)
+    	lw   $s3, 4($sp)
+    	lw   $s2, 8($sp)
+    	lw   $s1, 12($sp)
+    	lw   $s0, 16($sp)
+    	lw   $ra, 20($sp)
+    	addi $sp, $sp, 24
+    	jr   $ra
+
+# print_complete_list MODIFICADO para mostrar stock faltante
+print_complete_list:
+    	addi $sp, $sp, -40
+    	sw   $ra, 36($sp)
+    	sw   $s0, 32($sp)
+    	sw   $s1, 28($sp)
+    	sw   $s2, 24($sp)
+    	sw   $s3, 20($sp)
+    	sw   $s4, 16($sp)
+    	sw   $s5, 12($sp)
+    	sw   $s6, 8($sp)
+    	swc1 $f20, 4($sp)
+    	swc1 $f22, 0($sp)
+
+    		la   $a0, finished
+    		li   $v0, 4
+   	syscall
+
+    	la   $s0, head
+    	lw   $s0, 0($s0)
+    	beqz $s0, print_complete_done
+	mtc1 $zero, $f20       # total acumulado
+
+print_complete_loop:
+    	lwc1 $f12, 0($s0)      # precio total para este nodo
+    	lw   $s1, 4($s0)       # puntero al nombre del producto
+    	lw   $s2, 8($s0)       # código del producto
+    	add.s $f20, $f20, $f12 # sumar al total
+    	# Buscar el producto por código para obtener precio unitario y stock
+    	la   $s3, productos
+    	li   $s4, 14
+search_product_loop:
+    	beqz $s4, product_not_found_in_list
+    	lw   $s5, 0($s3)       # puntero a estructura del producto
+    	lw   $t0, 0($s5)       # código
+    	beq  $s2, $t0, found_product_in_list
+    	addi $s3, $s3, 4
+    	addi $s4, $s4, -1
+    	j search_product_loop
+
+found_product_in_list:
+    	# $s5 tiene el puntero a la estructura del producto
+    	lw   $t1, 8($s5)       # parte entera del precio
+    	lw   $t2, 12($s5)      # parte centavos del precio
+    	lw   $s6, 4($s5)       # stock actual
+    	# Convertir precio unitario a float
+    	mtc1 $t1, $f4
+    	cvt.s.w $f4, $f4
+    	mtc1 $t2, $f6
+    	cvt.s.w $f6, $f6
+    	li   $t3, 100
+    	mtc1 $t3, $f8
+    	cvt.s.w $f8, $f8
+    	div.s $f6, $f6, $f8
+    	add.s $f4, $f4, $f6    # f4 = precio unitario
+
+    	# Calcular cantidad: precio_total / precio_unitario
+    	div.s $f22, $f12, $f4   # cantidad en f22
+    	cvt.w.s $f22, $f22     # convertir a entero
+    	mfc1 $t4, $f22         # t4 = cantidad
+
+    	# Imprimir: nombre, " x", cantidad, " stock ", stock_actual, " $ ", precio_total
+    		move $a0, $s1          # nombre del producto
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+
+    		li   $a0, 'x'
+    		li   $v0, 11
+    	syscall
+
+    		move $a0, $t4          # cantidad
+    		li   $v0, 1
+    	syscall
+
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, stock_display
+    		li   $v0, 4
+    	syscall
+
+    		move $a0, $s6          # stock actual
+    		li   $v0, 1
+    	syscall
+
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, signo_dolar
+    		li   $v0, 4
+    	syscall
+
+    		mov.s $f12, $f12       # precio total para este item
+    		li   $v0, 2
+    	syscall
+
+    		la   $a0, newline
+    		li   $v0, 4
+    	syscall
+
+    	j next_node
+
+product_not_found_in_list:
+    	# Si no se encuentra el producto, imprimir sin stock
+    		move $a0, $s1
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, espacio
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, signo_dolar
+    		li   $v0, 4
+    	syscall
+
+    		mov.s $f12, $f12
+    		li    $v0, 2
+   	syscall
+   	
+    		la   $a0, newline
+    		li   $v0, 4
+   	syscall
+
+next_node:
+    	lw   $s0, 12($s0)      # siguiente nodo
+    	bnez $s0, print_complete_loop
+
+print_complete_done:
+    		la   $a0, newline
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, total_label
+    		li   $v0, 4
+    	syscall
+
+    		la   $a0, signo_dolar
+    		li   $v0, 4
+    	syscall
+
+    		mov.s $f12, $f20
+    		li   $v0, 2
+    	syscall
+
+		la   $a0, newline
+    		li   $v0, 4
+    	syscall
+
+    	lwc1 $f22, 0($sp)
+    	lwc1 $f20, 4($sp)
+    	lw   $s6, 8($sp)
+    	lw   $s5, 12($sp)
+    	lw   $s4, 16($sp)
+    	lw   $s3, 20($sp)
+    	lw   $s2, 24($sp)
+    	lw   $s1, 28($sp)
+    	lw   $s0, 32($sp)
+    	lw   $ra, 36($sp)
+    	addi $sp, $sp, 40
+    	jr   $ra
+
+exit_with_report:
+    	jal print_complete_list
+    	j exit_program
+
+# Llamador para mostrar stock
+call_show_stock:
+    	jal show_stock
+    	j loop_input
+
+do_print_purchase:
+    	jal  print_purchase_from_medio
+   	 # reiniciar medio para la siguiente compra
+    	la   $t0, medio
+    	sw   $zero, 0($t0)
+    	j    loop_input
+
+
+# Main: bucle de comandos
+main:
+
+loop_input:
+    	# Leer comando en buffer (línea)
+    		la $a0, buffer
+    		li $a1, 32
+    		li $v0, 8
+    	syscall
+
+    	lb  $t0, buffer
+   	beq $t0, '/', exit_with_report
+    	beq $t0, '*', do_multiply
+    	beq $t0, '+', do_print_purchase
+    	beq $t0, '-', call_remove
+    	beq $t0, 's', call_show_stock
+
+   	 # Caso: código de producto en buffer
+    	la $a0, buffer
+    	jal ascii_to_int
+    	move $t4, $v0
+	# Buscar producto
+    	la $t2, productos
+    	li $t1, 14
+
+search_loop:
+    	beqz $t1, not_found
+    	lw   $t3, 0($t2)                # puntero a estructura
+    	lw   $t5, 0($t3)                # código
+    	beq  $t4, $t5, found_product
+    	addi $t2, $t2, 4
+    	addi $t1, $t1, -1
+    	j    search_loop
+
+found_product:
+   	 # VERIFICAR STOCK ANTES DE AÑADIR
+    	move    $a0, $t3
+    	jal     check_and_reduce_stock
+    	beqz    $v0, product_out_of_stock
+    	# Guardar el puntero a la estructura en $t7
+    	move    $t7, $t3
+	
+    	# Calcular precio directamente desde la estructura del producto
+    	lw      $t5, 8($t7)        # parte entera del precio
+    	lw      $t6, 12($t7)       # centavos del precio
+    	mtc1    $t5, $f0
+    	cvt.s.w $f0, $f0      # convierte parte entera a float
+    	mtc1    $t6, $f1
+    	cvt.s.w $f1, $f1      # convierte centavos a float
+    	li      $t9, 100
+    	mtc1    $t9, $f2
+    	cvt.s.w $f2, $f2      # 100.0
+    	div.s   $f1, $f1, $f2   # centavos / 100.0
+    	add.s   $f12, $f0, $f1  # precio completo = entero + centavos/100
+
+    	addi    $a0, $t7, 16      # a0 = puntero al nombre
+    	move    $t8, $a0          # guardar puntero en t8 antes de llamar
+    	jal     print_product      # print_product puede cambiar a0
+    	move    $a1, $t8          # pasar puntero guardado a add_to_list
+    	move    $a2, $t4          # pasar el código del producto
+    	jal     add_to_list
+    	j       loop_input
+
+product_out_of_stock:
+    		la $a0, out_of_stock
+    		li $v0, 4
+    	syscall
+    	
+    	j loop_input
+
+exit_program:
+    		la $a0, finished
+    		li $v0, 4
+    	syscall
+    
+    		li $v0, 10
+    	syscall
+
+not_found:
+    		la $a0, notfound
+    		li $v0, 4
+    	syscall
+    	
+    	j loop_input
