@@ -83,13 +83,9 @@ wait_key:
     # mover arriba con 'w' o 'W'
     li $t2, 'w'
     beq $t1, $t2, do_move_up
-    li $t2, 'W'
-    beq $t1, $t2, do_move_up
 
     # mover abajo con 's' o 'S'
     li $t2, 's'
-    beq $t1, $t2, do_move_down
-    li $t2, 'S'
     beq $t1, $t2, do_move_down
     
     # mover arriba con 'o'
@@ -104,64 +100,51 @@ wait_key:
     j main_loop
 
 # -------------------------
-# Actualizar posJugUición: subir (circular 2..7)
+# Actualizar posJugUición: subir 
 # -------------------------
 do_move_up:
     li $t3, 2
-    beq $s0, $t3, wrap_to_7   # si s0 == 2 -> ir a 7
+    beq $s0, $t3, stay_at_2   # si ya está en 2, no mover
     addi $s0, $s0, -1         # sino decrementar
-    j store_and_loop_up
-wrap_to_7:
-    li $s0, 7
-store_and_loop_up:
-    # guardar nueva posJugUición en memoria
+stay_at_2:
     la $t0, posJugU
     sw $s0, 0($t0)
     j main_loop
 
 # -------------------------
-# Actualizar posJugUición: bajar (circular 2..7)
+# Actualizar posJugUición: bajar 
 # -------------------------
 do_move_down:
     li $t3, 7
-    beq $s0, $t3, wrap_to_2   # si s0 == 7 -> ir a 2
+    beq $s0, $t3, stay_at_7   # si ya está en 7, no mover
     addi $s0, $s0, 1          # sino incrementar
-    j store_and_loop_down
-wrap_to_2:
-    li $s0, 2
-store_and_loop_down:
-    # guardar nueva posJugUición en memoria
+stay_at_7:
     la $t0, posJugU
     sw $s0, 0($t0)
     j main_loop
 
 
 # -------------------------
-# Actualizar posJugDición: subir (circular 2..7)
+# Actualizar posJugDición: subir 
 # -------------------------
 do_move_up_right:
     li $t3, 2
-    beq $s4, $t3, wrap_to_7_right
+    beq $s4, $t3, stay_at_2_right   # si ya está en 2, no mover
     addi $s4, $s4, -1
-    j store_and_loop_up_right
-wrap_to_7_right:
-    li $s4, 7
-store_and_loop_up_right:
+stay_at_2_right:
     la $t0, posJugD
     sw $s4, 0($t0)
     j main_loop
 
 do_move_down_right:
     li $t3, 7
-    beq $s4, $t3, wrap_to_2_right
+    beq $s4, $t3, stay_at_7_right   # si ya está en 7, no mover
     addi $s4, $s4, 1
-    j store_and_loop_down_right
-wrap_to_2_right:
-    li $s4, 2
-store_and_loop_down_right:
+stay_at_7_right:
     la $t0, posJugD
     sw $s4, 0($t0)
     j main_loop
+
 
 
 # -------------------------
